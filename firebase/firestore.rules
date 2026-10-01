@@ -1,0 +1,573 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Data models: users/{uid}; studentProfiles/{uid};
+    // studentInvites/{random token}; teacherProfiles/{uid};
+    // teacherInvites/{random token}. Invitation IDs are bearer secrets.
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isAuthenticated()
+        && get(
+          /databases/$(database)/documents/users/$(request.auth.uid)
+        ).data.role == "ADMIN";
+    }
+
+    function isValidEmail(email) {
+      return email is string
+        && email.size() > 0
+        && email.size() <= 254
+        && email.matches("^[^@]+@[^@]+\\.[^@]+$");
+    }
+
+    function isValidStudentInvite(data) {
+      return data.keys().hasAll([
+          "fullName", "email", "phone", "gender", "dateOfBirth",
+          "parentName", "parentPhone", "level", "program", "status",
+          "createdAt", "updatedAt", "acceptedByUid", "acceptedAt"
+        ])
+        && data.keys().hasOnly([
+          "fullName", "email", "phone", "gender", "dateOfBirth",
+          "parentName", "parentPhone", "level", "program", "status",
+          "createdAt", "updatedAt", "acceptedByUid", "acceptedAt"
+        ])
+        && data.fullName is string
+        && data.fullName.size() > 0
+        && data.fullName.size() <= 120
+        && isValidEmail(data.email)
+        && data.phone is string
+        && data.phone.size() <= 40
+        && (data.gender == null || data.gender in ["MALE", "FEMALE"])
+        && (data.dateOfBirth == null || (data.dateOfBirth is string && data.dateOfBirth.size() <= 10))
+        && data.parentName is string
+        && data.parentName.size() <= 120
+        && data.parentPhone is string
+        && data.parentPhone.size() <= 40
+        && data.level is string
+        && data.level.size() <= 80
+        && data.program is string
+        && data.program.size() <= 120
+        && data.status == "PENDING"
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp
+        && data.acceptedByUid == null
+        && data.acceptedAt == null;
+    }
+
+    function isValidStudentProfile(profile, studentId) {
+      return profile.keys().hasAll([
+          "uid", "inviteToken", "fullName", "email", "phone", "gender",
+          "dateOfBirth", "parentName", "parentPhone", "level", "program",
+          "status", "joinedAt", "createdAt", "updatedAt"
+        ])
+        && profile.keys().hasOnly([
+          "uid", "inviteToken", "fullName", "email", "phone", "gender",
+          "dateOfBirth", "parentName", "parentPhone", "level", "program",
+          "status", "joinedAt", "createdAt", "updatedAt"
+        ])
+        && profile.uid == studentId
+        && profile.inviteToken is string
+        && profile.inviteToken.matches("^[A-Za-z0-9]{48}$")
+        && profile.fullName is string
+        && profile.fullName.size() > 0
+        && profile.fullName.size() <= 120
+        && isValidEmail(profile.email)
+        && profile.phone is string
+        && profile.phone.size() <= 40
+        && profile.gender is string
+        && (profile.gender == "" || profile.gender in ["MALE", "FEMALE"])
+        && profile.dateOfBirth is string
+        && profile.dateOfBirth.size() <= 10
+        && profile.parentName is string
+        && profile.parentName.size() <= 120
+        && profile.parentPhone is string
+        && profile.parentPhone.size() <= 40
+        && profile.level is string
+        && profile.level.size() <= 80
+        && profile.program is string
+        && profile.program.size() <= 120
+        && profile.status in ["ACTIVE", "INACTIVE", "SUSPENDED", "GRADUATED"]
+        && profile.joinedAt is timestamp
+        && profile.createdAt is timestamp
+        && profile.updatedAt is timestamp;
+    }
+
+    function isStudentProfileFromInvite(studentId, profile) {
+      let invitePath = /databases/$(database)/documents/studentInvites/$(profile.inviteToken);
+      let invite = getAfter(invitePath).data;
+      return profile.inviteToken is string
+        && profile.inviteToken.matches("^[A-Za-z0-9]{48}$")
+        && existsAfter(invitePath)
+        && invite.status == "ACCEPTED"
+        && invite.acceptedByUid == studentId
+        && invite.email == request.auth.token.email
+        && invite.fullName == profile.fullName
+        && invite.phone == profile.phone
+        && ((invite.gender == null && profile.gender == "") || invite.gender == profile.gender)
+        && ((invite.dateOfBirth == null && profile.dateOfBirth == "") || invite.dateOfBirth == profile.dateOfBirth)
+        && invite.parentName == profile.parentName
+        && invite.parentPhone == profile.parentPhone
+        && invite.level == profile.level
+        && invite.program == profile.program;
+    }
+
+    function isValidTeacherInvite(data) {
+      return data.keys().hasAll([
+          "fullName", "email", "phone", "gender", "experienceYears",
+          "specialization", "bio", "status", "createdAt", "updatedAt",
+          "acceptedByUid", "acceptedAt"
+        ])
+        && data.keys().hasOnly([
+          "fullName", "email", "phone", "gender", "experienceYears",
+          "specialization", "bio", "status", "createdAt", "updatedAt",
+          "acceptedByUid", "acceptedAt"
+        ])
+        && data.fullName is string
+        && data.fullName.size() > 0
+        && data.fullName.size() <= 120
+        && isValidEmail(data.email)
+        && data.phone is string
+        && data.phone.size() <= 40
+        && (data.gender == null || data.gender in ["MALE", "FEMALE"])
+        && data.experienceYears is number
+        && data.experienceYears >= 0
+        && data.experienceYears <= 80
+        && data.specialization is list
+        && data.specialization.size() <= 10
+        && data.bio is string
+        && data.bio.size() <= 2000
+        && data.status == "PENDING"
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp
+        && data.acceptedByUid == null
+        && data.acceptedAt == null;
+    }
+
+    function isAcceptedTeacherInvite(userId, inviteToken) {
+      let invitePath = /databases/$(database)/documents/teacherInvites/$(inviteToken);
+      let invite = getAfter(invitePath).data;
+      return inviteToken is string
+        && inviteToken.matches("^[A-Za-z0-9]{48}$")
+        && existsAfter(invitePath)
+        && invite.status == "ACCEPTED"
+        && invite.acceptedByUid == userId
+        && invite.email == request.auth.token.email;
+    }
+
+    function isValidTeacherProfile(profile, teacherId) {
+      return profile.keys().hasAll([
+          "uid", "inviteToken", "fullName", "email", "phone", "gender",
+          "experienceYears", "specialization", "bio", "status", "joinedAt",
+          "createdAt", "updatedAt"
+        ])
+        && profile.keys().hasOnly([
+          "uid", "inviteToken", "fullName", "email", "phone", "gender",
+          "experienceYears", "specialization", "bio", "status", "joinedAt",
+          "createdAt", "updatedAt"
+        ])
+        && profile.uid == teacherId
+        && profile.inviteToken is string
+        && profile.inviteToken.matches("^[A-Za-z0-9]{48}$")
+        && profile.fullName is string
+        && profile.fullName.size() > 0
+        && profile.fullName.size() <= 120
+        && isValidEmail(profile.email)
+        && profile.phone is string
+        && profile.phone.size() <= 40
+        && (profile.gender == null || profile.gender in ["MALE", "FEMALE"])
+        && profile.experienceYears is number
+        && profile.experienceYears >= 0
+        && profile.experienceYears <= 80
+        && profile.specialization is list
+        && profile.specialization.size() <= 10
+        && profile.bio is string
+        && profile.bio.size() <= 2000
+        && profile.status in ["ACTIVE", "INACTIVE", "SUSPENDED"]
+        && profile.joinedAt is string
+        && profile.joinedAt.size() <= 40
+        && profile.createdAt is timestamp
+        && profile.updatedAt is timestamp;
+    }
+
+    function isTeacherProfileFromInvite(teacherId, profile) {
+      let invitePath = /databases/$(database)/documents/teacherInvites/$(profile.inviteToken);
+      let invite = getAfter(invitePath).data;
+      return profile.inviteToken is string
+        && profile.inviteToken.matches("^[A-Za-z0-9]{48}$")
+        && existsAfter(invitePath)
+        && invite.status == "ACCEPTED"
+        && invite.acceptedByUid == teacherId
+        && invite.email == request.auth.token.email
+        && invite.fullName == profile.fullName
+        && invite.phone == profile.phone
+        && invite.gender == profile.gender
+        && invite.experienceYears == profile.experienceYears
+        && invite.specialization == profile.specialization
+        && invite.bio == profile.bio;
+    }
+
+    function isValidTeacherAssignment(data) {
+      let studentPath = /databases/$(database)/documents/studentProfiles/$(data.studentUid);
+      let teacherPath = /databases/$(database)/documents/teacherProfiles/$(data.teacherUid);
+      let student = get(studentPath).data;
+      let teacher = get(teacherPath).data;
+      return data.keys().hasAll([
+          "studentUid", "studentName", "studentEmail", "teacherUid",
+          "teacherName", "teacherEmail", "program", "notes", "status",
+          "assignedAt", "startedAt", "createdAt", "updatedAt"
+        ])
+        && data.keys().hasOnly([
+          "studentUid", "studentName", "studentEmail", "teacherUid",
+          "teacherName", "teacherEmail", "program", "notes", "status",
+          "assignedAt", "startedAt", "endedAt", "createdAt", "updatedAt",
+          "studentPhone", "studentGender", "studentDateOfBirth",
+          "studentParentName", "studentParentPhone", "studentLevel"
+        ])
+        && data.studentUid is string
+        && data.studentUid.size() > 0
+        && data.studentUid.size() <= 128
+        && data.studentName is string
+        && data.studentName.size() > 0
+        && data.studentName.size() <= 120
+        && isValidEmail(data.studentEmail)
+        && (!('studentPhone' in data) || (data.studentPhone is string && data.studentPhone.size() <= 40))
+        && (!('studentGender' in data) || data.studentGender in ["MALE", "FEMALE"])
+        && (!('studentDateOfBirth' in data) || (data.studentDateOfBirth is string && data.studentDateOfBirth.size() <= 10))
+        && (!('studentParentName' in data) || (data.studentParentName is string && data.studentParentName.size() <= 120))
+        && (!('studentParentPhone' in data) || (data.studentParentPhone is string && data.studentParentPhone.size() <= 40))
+        && (!('studentLevel' in data) || (data.studentLevel is string && data.studentLevel.size() <= 80))
+        && data.teacherUid is string
+        && data.teacherUid.size() > 0
+        && data.teacherUid.size() <= 128
+        && data.teacherName is string
+        && data.teacherName.size() > 0
+        && data.teacherName.size() <= 120
+        && isValidEmail(data.teacherEmail)
+        && data.program is string
+        && data.program.size() <= 120
+        && data.notes is string
+        && data.notes.size() <= 1000
+        && data.status == "ACTIVE"
+        && data.assignedAt is string
+        && data.assignedAt.size() <= 40
+        && data.startedAt is string
+        && data.startedAt.size() <= 40
+        && data.createdAt is string
+        && data.createdAt.size() <= 40
+        && data.updatedAt is string
+        && data.updatedAt.size() <= 40
+        && (!('endedAt' in data) || (data.endedAt is string && data.endedAt.size() <= 40))
+        && exists(studentPath)
+        && student.uid == data.studentUid
+        && student.status == "ACTIVE"
+        && student.fullName == data.studentName
+        && student.email == data.studentEmail
+        && exists(teacherPath)
+        && teacher.uid == data.teacherUid
+        && teacher.status == "ACTIVE"
+        && teacher.fullName == data.teacherName
+        && teacher.email == data.teacherEmail;
+    }
+
+    function hasActiveTeacherAssignment(assignmentId) {
+      let assignmentPath = /databases/$(database)/documents/teacherAssignments/$(assignmentId);
+      return isAuthenticated()
+        && exists(assignmentPath)
+        && get(assignmentPath).data.status == "ACTIVE"
+        && get(assignmentPath).data.teacherUid == request.auth.uid;
+    }
+
+    function isValidStudentLesson(data, assignment) {
+      return data.keys().hasAll([
+          "studentUid", "teacherUid", "title", "description", "type",
+          "surah", "status", "teacherNotes", "createdAt", "updatedAt"
+        ])
+        && data.keys().hasOnly([
+          "studentUid", "teacherUid", "title", "description", "type",
+          "surah", "ayahFrom", "ayahTo", "dueDate", "status",
+          "teacherNotes", "createdAt", "updatedAt", "completedAt"
+        ])
+        && data.studentUid == assignment.studentUid
+        && data.teacherUid == assignment.teacherUid
+        && data.title is string
+        && data.title.size() > 0
+        && data.title.size() <= 160
+        && data.description is string
+        && data.description.size() <= 2000
+        && data.type in ["QURAN_READING", "TAJWEED", "HIFZ", "REVIEW", "GENERAL"]
+        && data.surah is string
+        && data.surah.size() <= 100
+        && (!('ayahFrom' in data) || (data.ayahFrom is int && data.ayahFrom >= 1 && data.ayahFrom <= 6236))
+        && (!('ayahTo' in data) || (data.ayahTo is int && data.ayahTo >= 1 && data.ayahTo <= 6236))
+        && (!('ayahFrom' in data) || !('ayahTo' in data) || data.ayahTo >= data.ayahFrom)
+        && (!('dueDate' in data) || (data.dueDate is string && data.dueDate.size() <= 10))
+        && data.status in ["ASSIGNED", "IN_PROGRESS", "COMPLETED", "CANCELLED"]
+        && data.teacherNotes is string
+        && data.teacherNotes.size() <= 2000
+        && data.createdAt is string
+        && data.createdAt.size() <= 40
+        && data.updatedAt is string
+        && data.updatedAt.size() <= 40
+        && (!('completedAt' in data) || (data.completedAt is string && data.completedAt.size() <= 40));
+    }
+
+    /*
+     * Common user profiles
+     */
+    match /users/{userId} {
+
+      /*
+       * Users can read their own profile.
+       * Admins can read all user profiles.
+       */
+      allow read: if (
+        isAuthenticated()
+        && request.auth.uid == userId
+      ) || isAdmin();
+
+      /*
+       * A user can create their own profile.
+       *
+       * The role must be STUDENT or TEACHER.
+       *
+       * ADMIN profiles must never be created from
+       * the public frontend.
+       */
+      allow create: if isAuthenticated()
+        && request.auth.uid == userId
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.email == request.auth.token.email
+        && (
+          request.resource.data.role == "STUDENT"
+          || (
+            request.resource.data.role == "TEACHER"
+            && isAcceptedTeacherInvite(
+              userId,
+              request.resource.data.inviteToken
+            )
+          )
+        );
+
+      /*
+       * Users can update their own profile.
+       *
+       * They cannot change themselves into ADMIN.
+       */
+      allow update: if (
+        isAuthenticated()
+        && request.auth.uid == userId
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.role == resource.data.role
+        && request.resource.data.isActive == resource.data.isActive
+      ) || isAdmin();
+
+      allow delete: if false;
+    }
+
+
+    /*
+     * Teacher invitations
+     *
+     * The random token is the document ID.
+     *
+     * Anyone possessing the invitation token can read the
+     * pending invitation. The token should therefore be
+     * treated as a secret and shared only with the intended teacher.
+     */
+    match /teacherInvites/{inviteToken} {
+
+      /*
+       * Admin creates invitations.
+       */
+      allow create: if isAdmin()
+        && isValidTeacherInvite(request.resource.data);
+
+      /*
+       * The teacher needs to read their invitation before
+       * creating their Firebase account.
+       *
+       * Admins can also read invitations.
+       */
+      allow get: if isAdmin() || resource.data.status == "PENDING";
+      allow list: if isAdmin();
+
+      /*
+       * Only the authenticated teacher who owns the invited
+       * email address can consume the invitation.
+       *
+       * The client cannot change the invitation email,
+       * teacher name, or other invitation details.
+       */
+      allow update: if isAuthenticated()
+        && resource.data.status == "PENDING"
+        && request.resource.data.status == "ACCEPTED"
+        && request.resource.data.acceptedByUid == request.auth.uid
+        && request.auth.token.email == resource.data.email
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          "status", "acceptedByUid", "acceptedAt", "updatedAt"
+        ])
+        && request.resource.data.acceptedAt is timestamp
+        && request.resource.data.updatedAt is timestamp
+        && request.resource.data.fullName == resource.data.fullName
+        && request.resource.data.email == resource.data.email
+        && request.resource.data.phone == resource.data.phone
+        && request.resource.data.gender == resource.data.gender
+        && request.resource.data.experienceYears == resource.data.experienceYears
+        && request.resource.data.specialization == resource.data.specialization
+        && request.resource.data.bio == resource.data.bio
+        && existsAfter(/databases/$(database)/documents/users/$(request.auth.uid))
+        && getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.inviteToken == inviteToken
+        && existsAfter(/databases/$(database)/documents/teacherProfiles/$(request.auth.uid))
+        && getAfter(/databases/$(database)/documents/teacherProfiles/$(request.auth.uid)).data.inviteToken == inviteToken;
+
+      allow delete: if isAdmin();
+    }
+
+
+    /*
+     * Teacher profiles
+     */
+    match /teacherProfiles/{teacherId} {
+
+      /*
+       * Admin can read all teachers.
+       *
+       * A teacher can read their own profile.
+       */
+      allow get: if isAdmin()
+        || (isAuthenticated() && request.auth.uid == teacherId);
+      allow list: if isAdmin();
+
+      /*
+       * A teacher can create their own profile during activation.
+       *
+       * Admin can also create/update teacher profiles.
+       */
+      allow create: if (
+        isAdmin()
+        && isValidTeacherProfile(request.resource.data, teacherId)
+      ) || (
+        isAuthenticated()
+        && request.auth.uid == teacherId
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.email == request.auth.token.email
+        && isValidTeacherProfile(request.resource.data, teacherId)
+        && isTeacherProfileFromInvite(teacherId, request.resource.data)
+      );
+
+      allow update: if isAdmin()
+        && isValidTeacherProfile(request.resource.data, teacherId)
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.inviteToken == resource.data.inviteToken
+        && request.resource.data.createdAt == resource.data.createdAt;
+
+      allow delete: if isAdmin();
+    }
+
+    match /studentInvites/{inviteToken} {
+      allow create: if isAdmin()
+        && isValidStudentInvite(request.resource.data);
+
+      // Only a bearer of the random token can fetch a pending invite.
+      // Collection enumeration is restricted to administrators.
+      allow get: if isAdmin() || resource.data.status == "PENDING";
+      allow list: if isAdmin();
+
+      allow update: if isAuthenticated()
+        && resource.data.status == "PENDING"
+        && request.resource.data.status == "ACCEPTED"
+        && request.resource.data.acceptedByUid == request.auth.uid
+        && request.auth.token.email == resource.data.email
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          "status", "acceptedByUid", "acceptedAt", "updatedAt"
+        ])
+        && request.resource.data.acceptedAt is timestamp
+        && request.resource.data.updatedAt is timestamp
+        && existsAfter(/databases/$(database)/documents/users/$(request.auth.uid))
+        && getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "STUDENT"
+        && existsAfter(/databases/$(database)/documents/studentProfiles/$(request.auth.uid))
+        && getAfter(/databases/$(database)/documents/studentProfiles/$(request.auth.uid)).data.inviteToken == inviteToken;
+
+      allow delete: if isAdmin();
+    }
+
+    match /studentProfiles/{studentId} {
+      allow get: if isAdmin()
+        || (isAuthenticated() && request.auth.uid == studentId);
+      allow list: if isAdmin();
+
+      allow create: if isAuthenticated()
+        && request.auth.uid == studentId
+        && request.resource.data.email == request.auth.token.email
+        && isValidStudentProfile(request.resource.data, studentId)
+        && isStudentProfileFromInvite(studentId, request.resource.data);
+
+      allow update: if isAdmin()
+        && isValidStudentProfile(request.resource.data, studentId)
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.inviteToken == resource.data.inviteToken
+        && request.resource.data.email == resource.data.email
+        && request.resource.data.createdAt == resource.data.createdAt;
+
+      allow delete: if isAdmin();
+    }
+
+    match /teacherAssignments/{assignmentId} {
+      allow get, list: if isAdmin()
+        || (isAuthenticated() && resource.data.teacherUid == request.auth.uid);
+      allow create: if isAdmin()
+        && isValidTeacherAssignment(request.resource.data);
+      allow update, delete: if false;
+
+      match /lessons/{lessonId} {
+        allow get, list: if isAdmin()
+          || hasActiveTeacherAssignment(assignmentId);
+
+        allow create: if hasActiveTeacherAssignment(assignmentId)
+          && isValidStudentLesson(
+            request.resource.data,
+            get(/databases/$(database)/documents/teacherAssignments/$(assignmentId)).data
+          )
+          && request.resource.data.status == "ASSIGNED";
+
+        allow update: if hasActiveTeacherAssignment(assignmentId)
+          && isValidStudentLesson(
+            request.resource.data,
+            get(/databases/$(database)/documents/teacherAssignments/$(assignmentId)).data
+          )
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            "status", "updatedAt", "completedAt"
+          ])
+          && request.resource.data.createdAt == resource.data.createdAt
+          && (
+            (resource.data.status == "ASSIGNED"
+              && request.resource.data.status in ["IN_PROGRESS", "CANCELLED"])
+            || (resource.data.status == "IN_PROGRESS"
+              && request.resource.data.status in ["COMPLETED", "CANCELLED"])
+          )
+          && (
+            (request.resource.data.status == "COMPLETED"
+              && 'completedAt' in request.resource.data)
+            || (request.resource.data.status != "COMPLETED"
+              && !('completedAt' in request.resource.data))
+          );
+
+        allow delete: if false;
+      }
+    }
+
+
+    /*
+     * Everything else remains denied until we explicitly
+     * implement its rules.
+     */
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
